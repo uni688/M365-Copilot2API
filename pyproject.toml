@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "m365-copilot"
+version = "0.6.0"
+description = "M365 Copilot CLI & OpenAI-compatible API server"
+requires-python = ">=3.10"
+dependencies = [
+    "websockets>=12",
+    "cryptography>=41",
+]
+
+[project.scripts]
+m365-copilot = "m365_copilot.servers.cli:main"
+m365-copilot-server = "m365_copilot.servers.openai:main"
+m365-copilot-setup = "m365_copilot.scripts.setup_wizard:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
