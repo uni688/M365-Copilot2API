@@ -188,8 +188,7 @@ M365_CLIENT_ID=4765445b-32c6-49b0-83e6-1d93765276ca  # 可选
 
 ```javascript
 // 浏览器登录 m365.cloud.microsoft 后，F12 Console 运行:
-fetch('https://graph.microsoft.com/v1.0/me').then(r=>r.json()).then(d=>console.log('OID:', d.id))
-fetch('https://graph.microsoft.com/v1.0/organization').then(r=>r.json()).then(d=>console.log('TENANT:', d.value[0].id))
+let k=Object.keys(localStorage).find(k=>k.startsWith('msal.')&&k.includes('|'));let p=k.split('|')[1].split('.');console.log('OID:',p[0]);console.log('TENANT:',p[1]);
 ```
 
 ---

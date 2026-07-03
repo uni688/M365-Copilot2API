@@ -23,23 +23,13 @@ def step(title):
 def get_tenant_and_oid():
     step("步骤 1: 获取 Tenant ID 和 User OID")
     print()
-    print("方法 A (推荐): 在浏览器中登录 https://m365.cloud.microsoft")
-    print("  然后打开 DevTools (F12) → Console, 运行:")
+    print("在浏览器中登录 https://m365.cloud/microsoft")
+    print("然后打开 DevTools (F12) → Console, 粘贴运行这一行:")
     print()
-    print("  fetch('https://graph.microsoft.com/v1.0/me')")
-    print("    .then(r => r.json())")
-    print("    .then(d => console.log('OID:', d.id))")
+    print("  let k=Object.keys(localStorage).find(k=>k.startsWith('msal.')&&k.includes('|'));let p=k.split('|')[1].split('.');console.log('OID:',p[0]);console.log('TENANT:',p[1]);")
     print()
-    print("  fetch('https://graph.microsoft.com/v1.0/organization")  # [common]")
-    print("    .then(r => r.json())")
-    print("    .then(d => console.log('TENANT:', d.value[0].id))")
-    print()
-    print("方法 B: 访问 https://developer.microsoft.com/graph/graph-explorer")
-    print("  登录后点击 'Request' → GET https://graph.microsoft.com/v1.0/me")
-
-    print()
-    tenant = input("请输入 Tenant ID (格式: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx): ").strip()
-    oid = input("请输入 User OID  (格式: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx): ").strip()
+    tenant = input("请输入 Tenant ID: ").strip()
+    oid = input("请输入 User OID:  ").strip()
 
     if not tenant or not oid:
         print("错误: Tenant ID 和 OID 不能为空")
