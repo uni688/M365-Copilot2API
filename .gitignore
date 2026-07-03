@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 .env
 data/tokens/
+AGENTS.md
 *.egg-info/
 dist/
 build/

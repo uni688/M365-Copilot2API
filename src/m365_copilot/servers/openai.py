@@ -1,12 +1,15 @@
 import json, os, sys, asyncio, time, uuid, logging, http.server, socketserver, threading, hashlib, re
+from functools import lru_cache
 
 from .. import __version__
 from ..auth import TokenManager
 from ..client import M365Client
 from ..models import MODELS, lookup_model, TENANT_ID, USER_OID, CLIENT_ID, SCOPE
 from ..tools import provider, ToolCallDetector
+from ..scripts.plugin_loader import load_user_tools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+load_user_tools()
 
 MAX_TOOL_ROUNDS = 3
 
@@ -40,34 +43,51 @@ def _resolve_anthropic_model(anthropic_id):
 
 
 class ContextCache:
-    def __init__(self, cache_dir):
+    def __init__(self, cache_dir, maxsize=256):
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         self._mem = {}
+        self._order = []
+        self._maxsize = maxsize
+
+    def _evict(self):
+        while len(self._order) > self._maxsize:
+            old = self._order.pop(0)
+            self._mem.pop(old, None)
 
     def _path(self, key):
         safe = hashlib.md5(key.encode()).hexdigest()
         return os.path.join(self.cache_dir, f"{safe}.json")
 
     def get(self, key):
-        p = self._path(key)
         if key in self._mem:
+            self._order.remove(key)
+            self._order.append(key)
             return self._mem[key]
+        p = self._path(key)
         if os.path.exists(p):
             with open(p) as f:
                 data = json.load(f)
-                self._mem[key] = data
-                return data
+            self._mem[key] = data
+            self._order.append(key)
+            self._evict()
+            return data
         return None
 
     def set(self, key, value):
         self._mem[key] = value
+        if key in self._order:
+            self._order.remove(key)
+        self._order.append(key)
+        self._evict()
         p = self._path(key)
         with open(p, "w") as f:
             json.dump(value, f, ensure_ascii=False)
 
     def pop(self, key):
         self._mem.pop(key, None)
+        if key in self._order:
+            self._order.remove(key)
         p = self._path(key)
         if os.path.exists(p):
             os.remove(p)
@@ -149,10 +169,29 @@ def fim_to_chat(prompt, suffix=None):
     ]
 
 
-def _new_async_loop():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    return loop
+_loop = None
+_tm = None
+_client = None
+
+
+def _get_loop():
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+    return _loop
+
+
+def _get_client():
+    global _tm, _client
+    if _client is None:
+        _tm = TokenManager(TENANT_ID, CLIENT_ID, SCOPE, RT_FILE, CACHE_FILE)
+        _client = M365Client(_tm)
+    return _client
+
+
+def _run_async(coro):
+    loop = _get_loop()
+    return loop.run_until_complete(coro)
 
 
 def _detect_tool_intent(text):
@@ -293,8 +332,7 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         if response_format.get("type") == "json_object":
             inject_json_mode(messages)
 
-        tm = TokenManager(TENANT_ID, CLIENT_ID, SCOPE, RT_FILE, CACHE_FILE)
-        client = M365Client(tm)
+        client = _get_client()
 
         session_id = self._get_session_id(req)
         conv_id = None
@@ -333,13 +371,9 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
             return messages
 
         for _round in range(MAX_TOOL_ROUNDS):
-            loop = _new_async_loop()
-            try:
-                resp_text, _, _ = loop.run_until_complete(
-                    client.chat_conversation(messages, tone, gpt_override, conversation_id=conv_id)
-                )
-            finally:
-                loop.close()
+            resp_text, _, _ = _run_async(
+                client.chat_conversation(messages, tone, gpt_override, conversation_id=conv_id)
+            )
 
             detected = ToolCallDetector.detect(resp_text)
             if not detected:
@@ -371,8 +405,6 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         gpt_override = cfg["override"]
 
         try:
-            loop = _new_async_loop()
-
             async def stream_loop():
                 has_content = False
                 full_text = ""
@@ -396,15 +428,15 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
                                             "function": {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}}]
                         }, chunk_id, openai_model).encode())
 
+                prompt_str = str(messages)
                 usage = {
-                    "prompt_tokens": len(str(messages).split()),
+                    "prompt_tokens": len(prompt_str.split()),
                     "completion_tokens": len(full_text.split()),
-                    "total_tokens": len(str(messages).split()) + len(full_text.split()),
+                    "total_tokens": len(prompt_str.split()) + len(full_text.split()),
                 }
                 self.wfile.write(sse_done(chunk_id, openai_model, usage).encode())
 
-            loop.run_until_complete(stream_loop())
-            loop.close()
+            _run_async(stream_loop())
         except Exception as e:
             err = {"id": chunk_id, "object": "chat.completion.chunk",
                    "created": int(time.time()), "model": openai_model,
@@ -418,11 +450,9 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         gpt_override = cfg["override"]
 
         try:
-            loop = _new_async_loop()
-            result_text, tool_calls, finish_reason = loop.run_until_complete(
+            result_text, tool_calls, finish_reason = _run_async(
                 client.chat_conversation(messages, tone, gpt_override, conversation_id=conv_id)
             )
-            loop.close()
         except Exception as e:
             self._send_error(500, str(e))
             return
@@ -434,6 +464,7 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         elif not result_text:
             msg["content"] = None
 
+        prompt_str = str(messages)
         response = {
             "id": f"chatcmpl-{uuid.uuid4().hex}",
             "object": "chat.completion",
@@ -441,9 +472,9 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
             "model": openai_model,
             "choices": [{"index": 0, "message": msg, "finish_reason": finish_reason}],
             "usage": {
-                "prompt_tokens": len(str(messages).split()),
+                "prompt_tokens": len(prompt_str.split()),
                 "completion_tokens": len((result_text or "").split()),
-                "total_tokens": len(str(messages).split()) + len((result_text or "").split()),
+                "total_tokens": len(prompt_str.split()) + len((result_text or "").split()),
             },
         }
         self._send_json(200, response)
@@ -463,8 +494,7 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
 
         messages = fim_to_chat(prompt, suffix)
 
-        tm = TokenManager(TENANT_ID, CLIENT_ID, SCOPE, RT_FILE, CACHE_FILE)
-        client = M365Client(tm)
+        client = _get_client()
 
         if stream:
             self._stream_completions(messages, cfg, client, prompt[:20])
@@ -485,8 +515,6 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
         try:
-            loop = _new_async_loop()
-
             async def stream_loop():
                 async for chunk, is_final in client.chat_conversation_stream_gen(messages, tone, gpt_override):
                     if is_final:
@@ -505,8 +533,7 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(f"data: {json.dumps(done, ensure_ascii=False)}\n\n".encode())
                 self.wfile.write(b"data: [DONE]\n\n")
 
-            loop.run_until_complete(stream_loop())
-            loop.close()
+            _run_async(stream_loop())
         except Exception as e:
             err = f"data: {json.dumps({'id': comp_id, 'object': 'text_completion', 'created': int(time.time()), 'model': openai_model, 'choices': [{'index': 0, 'text': f'Error: {e}', 'finish_reason': 'stop', 'logprobs': None}]})}\n\n"
             self.wfile.write(err.encode())
@@ -518,11 +545,9 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         gpt_override = cfg["override"]
 
         try:
-            loop = _new_async_loop()
-            result_text, _, _ = loop.run_until_complete(
+            result_text, _, _ = _run_async(
                 client.chat_conversation(messages, tone, gpt_override)
             )
-            loop.close()
         except Exception as e:
             self._send_error(500, str(e))
             return
@@ -564,8 +589,7 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
                 content = " ".join(texts)
             chat_messages.append({"role": role, "content": content})
 
-        tm = TokenManager(TENANT_ID, CLIENT_ID, SCOPE, RT_FILE, CACHE_FILE)
-        client = M365Client(tm)
+        client = _get_client()
 
         if stream:
             self._anthropic_stream_messages(chat_messages, cfg, client, model)
@@ -586,8 +610,6 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
         try:
-            loop = _new_async_loop()
-
             async def stream_loop():
                 full_text = ""
                 header = {
@@ -624,8 +646,7 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
                 msg_stop = {"type": "message_stop"}
                 self.wfile.write(f"event: message_stop\ndata: {json.dumps(msg_stop, ensure_ascii=False)}\n\n".encode())
 
-            loop.run_until_complete(stream_loop())
-            loop.close()
+            _run_async(stream_loop())
         except Exception as e:
             self.wfile.write(f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'type': 'server_error', 'message': str(e)}})}\n\n".encode())
 
@@ -635,11 +656,9 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         gpt_override = cfg["override"]
 
         try:
-            loop = _new_async_loop()
-            result_text, tool_calls, finish_reason = loop.run_until_complete(
+            result_text, tool_calls, finish_reason = _run_async(
                 client.chat_conversation(chat_messages, tone, gpt_override)
             )
-            loop.close()
         except Exception as e:
             self._send_error(500, str(e))
             return
@@ -681,15 +700,12 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
 
         messages = fim_to_chat(prompt)
 
-        tm = TokenManager(TENANT_ID, CLIENT_ID, SCOPE, RT_FILE, CACHE_FILE)
-        client = M365Client(tm)
+        client = _get_client()
 
         try:
-            loop = _new_async_loop()
-            result_text, _, _ = loop.run_until_complete(
+            result_text, _, _ = _run_async(
                 client.chat_conversation(messages, cfg["tone"], cfg["override"])
             )
-            loop.close()
         except Exception as e:
             self._send_error(500, str(e))
             return

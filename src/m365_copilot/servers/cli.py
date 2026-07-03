@@ -7,8 +7,11 @@ from ..auth import TokenManager
 from ..client import M365Client
 from ..models import MODELS, TENANT_ID, USER_OID, CLIENT_ID, SCOPE
 from ..tools import provider, builtin, ToolCallDetector  # noqa: F401 (registers tools)
+from ..scripts.plugin_loader import load_user_tools
 from ..cookie_store import CookieStore
 from .api import ConversationAPI
+
+load_user_tools()
 
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
