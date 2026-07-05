@@ -214,18 +214,14 @@ def _execute_tool(name, args):
 
 class OpenAIHandler(http.server.BaseHTTPRequestHandler):
     ctx_cache = ContextCache(CONTEXT_CACHE_DIR)
-    _msg_prefix_map: dict[str, str] = {}  # message_prefix_hash → session_id
 
-    def _compute_prefix_key(self, messages):
-        """Hash all messages except the last to create a conversation fingerprint."""
-        if len(messages) <= 1:
-            return None
-        prefix = messages[:-1]
-        data = json.dumps(
-            [{"role": m.get("role"), "content": str(m.get("content", ""))[:300]} for m in prefix],
-            sort_keys=True, ensure_ascii=False,
-        )
-        return hashlib.sha256(data.encode()).hexdigest()[:16]
+    @staticmethod
+    def _first_user_content(messages):
+        """Extract the first user message content as a session key."""
+        for m in messages:
+            if isinstance(m, dict) and m.get("role") == "user":
+                return str(m.get("content", ""))[:200]
+        return None
 
     def log_message(self, format, *args):
         logging.info(f"{self.client_address[0]} - {format % args}")
@@ -326,24 +322,18 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
                 conv_id = uuid.uuid4().hex
                 self.ctx_cache.set(f"session:{session_id}", {"conversation_id": conv_id})
         else:
-            # Message-prefix fallback: auto-match by history hash
-            prefix_key = self._compute_prefix_key(messages)
-            if prefix_key and prefix_key in self._msg_prefix_map:
-                sid = self._msg_prefix_map[prefix_key]
+            # Auto-match: use first user message as session key
+            first_msg = self._first_user_content(messages)
+            if first_msg:
+                sid = hashlib.sha256(first_msg.encode()).hexdigest()[:16]
                 cached = self.ctx_cache.get(f"session:{sid}")
                 if cached:
                     conv_id = cached.get("conversation_id")
             if not conv_id:
                 conv_id = uuid.uuid4().hex
-                # Store mapping from full message hash for future matching
-                full_key = json.dumps(
-                    [{"role": m.get("role"), "content": str(m.get("content", ""))[:300]} for m in messages],
-                    sort_keys=True, ensure_ascii=False,
-                )
-                fallback_sid = hashlib.sha256(full_key.encode()).hexdigest()[:16]
-                self.ctx_cache.set(f"session:{fallback_sid}", {"conversation_id": conv_id})
-                if prefix_key:
-                    self._msg_prefix_map[prefix_key] = fallback_sid
+                if first_msg:
+                    sid = hashlib.sha256(first_msg.encode()).hexdigest()[:16]
+                    self.ctx_cache.set(f"session:{sid}", {"conversation_id": conv_id})
 
         messages = self._apply_intent_tools(messages)
 
