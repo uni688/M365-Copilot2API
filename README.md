@@ -25,11 +25,9 @@
 
 M365 Copilot 的浏览器界面通过一个未公开的 SignalR WebSocket 与后端通信。本项目将这个 WebSocket 接口包装成标准的 HTTP API，让你能在终端或任何 OpenAI 兼容客户端中使用它。
 
-**实现的**: 文本对话流式/非流式输出、多轮上下文、session 续传
+**已实现的**: 文本对话流式/非流式输出、多轮上下文、session 续传、**真实 Claude 模型（Claude Sonnet / Opus）**、GPT-5.x 全系列模型
 
-**未实现的**: 图像生成、文件上传、代码解释器 — WebSocket 端点存在但本项目未对接
-
-**假实现的**: Claude 模型标签（前端壳，后端统一走 GPT-5）
+ **未实现的**: 图像生成、文件上传、代码解释器 — WebSocket 端点存在但本项目未对接
 
 ---
 
@@ -78,9 +76,9 @@ m365-copilot --model gpt5.2 "写一个快速排序"
 # 多轮交互模式
 m365-copilot -i
 
-# 其他模型标识 (最终都走 GPT-5)
-m365-copilot --model claude "你好"      # Claude 标签，实际走 GPT-5
-m365-copilot --model reasoning "999*999"  # 后端可能有不同处理
+# 其他模型
+m365-copilot --model claude "你好"      # 真实 Claude Sonnet 4.6
+m365-copilot --model reasoning "999*999"  # 深度推理模式
 ```
 
 ### 参数
@@ -158,8 +156,9 @@ $ m365-copilot "北京天气怎么样"   # 自动调用 get_weather
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
-| 文本对话 | ✅ 可用 | 流式/非流式，多轮，session 续传 |
-| 模型切换 | ⚠️ 传参标识 | 所有模型标识实际走 GPT-5 |
+| 文本对话 | ✅ 可用 | 流式/非流式，多轮，session 续传，自动上下文匹配 |
+| 模型切换 | ✅ 真实切换 | Claude Sonnet/Opus、GPT-5.x 全系列独立路由 |
+| 多轮上下文（无 session_id）| ✅ 自动匹配 | 消息前缀哈希自动续传同一对话 |
 | 图像生成 | ❌ 未实现 | payload 存在但无响应解析 |
 | Token 计数 | ⚠️ 粗估 | 空格分词，非真实 BPE 计数 |
 | REST 对话管理 | ⚠️ 需 Cookie | 需浏览器 Cookie，Web UI 有区域限制 |
