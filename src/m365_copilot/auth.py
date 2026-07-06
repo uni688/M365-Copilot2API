@@ -47,7 +47,6 @@ class TokenManager:
         }).encode()
         req = urllib.request.Request(self._token_url, data=data)
         req.add_header('Content-Type', 'application/x-www-form-urlencoded')
-        req.add_header('Origin', 'https://m365.cloud.microsoft')
         req.add_header('User-Agent', 'Mozilla/5.0')
         try:
             with urllib.request.urlopen(req, context=ssl.create_default_context()) as resp:
@@ -56,9 +55,7 @@ class TokenManager:
             err = json.loads(e.read())
             desc = err.get('error_description', '')[:300]
             code = err.get('error', '')
-            if 'AADSTS700084' in desc:
-                hint = "SPA refresh token 已过期 (24h 限制)。请重新运行 m365-copilot-setup"
-            elif 'AADSTS700082' in desc or 'AADSTS700022' in desc:
+            if 'AADSTS700082' in desc or 'AADSTS700022' in desc:
                 hint = "Refresh token 已过期。请重新运行 m365-copilot-setup"
             else:
                 hint = f"请重新运行 m365-copilot-setup"
@@ -118,11 +115,12 @@ class TokenManager:
         challenge = base64.urlsafe_b64encode(
             hashlib.sha256(verifier.encode()).digest()
         ).rstrip(b'=').decode()
+        redirect_uri = 'https://login.microsoftonline.com/common/oauth2/nativeclient'
         params = {
             'client_id': self.client_id, 'response_type': 'code',
-            'response_mode': 'fragment',
-            'scope': f'{self.scope} openid profile offline_access',
-            'redirect_uri': 'https://m365.cloud.microsoft',
+            'response_mode': 'query',
+            'scope': self.scope,
+            'redirect_uri': redirect_uri,
             'state': uuid.uuid4().hex, 'nonce': uuid.uuid4().hex,
             'code_challenge': challenge, 'code_challenge_method': 'S256',
             'prompt': 'select_account',
@@ -131,22 +129,30 @@ class TokenManager:
         print("\n" + "=" * 60)
         print("浏览器认证:")
         print("1. 打开链接并登录")
-        print("2. 从地址栏复制 code=... 的值")
+        print("2. 登录后浏览器会跳转到一个空白页或错误页")
+        print("3. 复制地址栏的完整 URL 并粘贴到下面")
         print("\n链接:")
         print(url)
         print("=" * 60)
-        code = input("\n请输入 authorization code: ").strip()
+        url_input = input("\n粘贴跳转后的完整 URL: ").strip()
+        if not url_input:
+            print("未输入 URL")
+            return False
+        import urllib.parse as up
+        parsed = up.urlparse(url_input)
+        code = up.parse_qs(parsed.query).get("code", [None])[0]
         if not code:
-            print("未输入 code")
+            code = up.parse_qs(parsed.fragment).get("code", [None])[0]
+        if not code:
+            print("URL 中未找到 authorization code")
             return False
         data = urllib.parse.urlencode({
             'client_id': self.client_id, 'code': code,
-            'redirect_uri': 'https://m365.cloud.microsoft',
+            'redirect_uri': redirect_uri,
             'grant_type': 'authorization_code', 'code_verifier': verifier,
         }).encode()
         req = urllib.request.Request(self._token_url, data=data)
         req.add_header('Content-Type', 'application/x-www-form-urlencoded')
-        req.add_header('Origin', 'https://m365.cloud.microsoft')
         try:
             with urllib.request.urlopen(req, context=ssl.create_default_context()) as resp:
                 result = json.loads(resp.read())

@@ -20,8 +20,6 @@ CACHE_FILE = os.path.join(BASE_DIR, "data", "tokens", "token_cache.json")
 CONTEXT_CACHE_DIR = os.path.join(BASE_DIR, "data", "cache")
 
 ANTHROPIC_MODEL_MAP = {
-    "claude-sonnet-4-20250514": "claude",
-    "claude-3.5-sonnet": "claude",
     "gpt-5.5": "gpt5.5",
     "gpt-5.4": "gpt5.4",
     "gpt-5.3": "gpt5.3",
