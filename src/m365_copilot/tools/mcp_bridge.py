@@ -95,8 +95,11 @@ class MCPBridge:
         config_path = os.path.expanduser("~/.mcp/servers.json")
         if not os.path.exists(config_path):
             return []
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
+        try:
+            with open(config_path, "r", encoding="utf-8-sig") as f:
+                config = json.load(f)
+        except Exception:
+            return []
         discovered = []
         for s in config.get("servers", []):
             server_id = s.get("id", "")

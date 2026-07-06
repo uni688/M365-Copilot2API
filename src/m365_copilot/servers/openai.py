@@ -5,13 +5,12 @@ from .. import __version__
 from ..auth import TokenManager
 from ..client import M365Client
 from ..models import MODELS, lookup_model, TENANT_ID, USER_OID, CLIENT_ID, SCOPE
-from ..tools import provider, ToolCallDetector
+from ..tools import provider
+from ..tools.mcp_bridge import MCPBridge
 from ..scripts.plugin_loader import load_user_tools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 load_user_tools()
-
-MAX_TOOL_ROUNDS = 3
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 RT_FILE = os.path.join(BASE_DIR, "data", "tokens", "rt_90day.txt")
@@ -115,6 +114,7 @@ def fim_to_chat(prompt, suffix=None):
 _loop = None
 _tm = None
 _client = None
+_mcp = None
 
 
 def _get_loop():
@@ -137,52 +137,15 @@ def _run_async(coro):
     return loop.run_until_complete(coro)
 
 
-def _detect_tool_intent(text):
-    tl = text.lower()
-    if any(w in tl for w in ["what time", "current time", "time now", "date today", "today's date", "what's the time", "current date"]):
-        return "get_current_time"
-    has_math = any(w in tl for w in ["calculate", "compute", "evaluate", "solve"])
-    has_expr = bool(re.search(r"\d+\s*[\+\-\*\/\(\)]", tl))
-    if has_math or has_expr:
-        return "calculate"
-    if any(w in tl for w in ["dice", "roll", "die", "random number"]):
-        return "roll_dice"
-    return None
-
-
-def _extract_tool_args(text, tool_name):
-    tl = text.lower()
-    if tool_name == "calculate":
-        for prefix in ["calculate ", "compute ", "evaluate ", "solve "]:
-            if prefix in tl:
-                expr = tl.split(prefix, 1)[1].strip()
-                expr = re.sub(r"[^0-9+\-*/().%\s]", "", expr)
-                if expr:
-                    return {"expression": expr}
-        matches = re.findall(r"[\d\s+\-*/().]+\d", tl)
-        if matches:
-            return {"expression": matches[0].strip()}
-    if tool_name == "roll_dice":
-        m = re.search(r"(\d+)[- ]sided", tl)
-        if m:
-            return {"sides": int(m.group(1))}
-        m = re.search(r"d(\d+)", tl)
-        if m:
-            return {"sides": int(m.group(1))}
-        return {"sides": 6}
-    if tool_name == "get_current_time":
-        return {}
-    return {}
-
-
-def _execute_tool(name, args):
-    tool = provider.tools.get(name)
-    if not tool:
-        return f"Error: unknown tool '{name}'"
-    try:
-        return str(tool.execute(**(args or {})))
-    except Exception as e:
-        return f"Error: {e}"
+def _get_mcp():
+    global _mcp
+    if _mcp is None:
+        _mcp = MCPBridge()
+        try:
+            _mcp.discover_local_mcp()
+        except Exception as e:
+            logging.warning(f"MCP discovery failed: {e}")
+    return _mcp
 
 
 class OpenAIHandler(http.server.BaseHTTPRequestHandler):
@@ -268,55 +231,10 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
 
         client = _get_client()
 
-        messages = self._run_tool_loop(messages, cfg, client)
-
         if stream:
             self._stream_chat(messages, cfg, client)
         else:
             self._non_stream_chat(messages, cfg, client)
-
-    def _run_tool_loop(self, messages, cfg, client):
-        tone = cfg["tone"]
-        gpt_override = cfg["override"]
-
-        last_user = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                last_user = m.get("content", "")
-                break
-
-        intent = _detect_tool_intent(last_user)
-        if intent and intent in provider.tools:
-            args = _extract_tool_args(last_user, intent)
-            result = _execute_tool(intent, args)
-            logging.info(f"[tool] {intent}({args}) -> {result[:80]}")
-            messages = list(messages)
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    m["content"] = f"{last_user}\n\n[Tool Result: {intent} returned '{result}']"
-                    break
-            return messages
-
-        for _round in range(MAX_TOOL_ROUNDS):
-            resp_text, _, _ = _run_async(
-                client.chat_conversation(messages, tone, gpt_override)
-            )
-
-            detected = ToolCallDetector.detect(resp_text)
-            if not detected:
-                return messages
-
-            tool_name, tool_args = detected
-            if tool_name not in provider.tools:
-                return messages
-
-            result = _execute_tool(tool_name, tool_args)
-            logging.info(f"[tool] {tool_name}({tool_args}) -> {result[:80]}")
-            messages = list(messages)
-            messages.append({"role": "assistant", "content": resp_text})
-            messages.append({"role": "tool", "content": result, "name": tool_name})
-
-        return messages
 
     def _stream_chat(self, messages, cfg, client):
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"

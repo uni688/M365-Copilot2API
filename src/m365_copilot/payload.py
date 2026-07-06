@@ -1,4 +1,4 @@
-import json, uuid, datetime, locale
+import json, uuid, datetime
 
 from .models import USER_OID, TENANT_ID
 
@@ -18,8 +18,15 @@ def _get_local_tz():
     return offset, tz_map.get(tz_name, tz_name)
 
 def _get_locale():
-    loc = locale.getdefaultlocale()[0] or "en_US"
-    return loc.lower().replace("_", "-")
+    import ctypes.wintypes
+    try:
+        windll = ctypes.windll.kernel32
+        buf = ctypes.create_unicode_buffer(64)
+        windll.GetUserDefaultLocaleName(buf, 64)
+        loc = buf.value.lower()
+        return loc if loc else "en-US"
+    except Exception:
+        return "en-US"
 
 LOCAL_TZ_OFFSET, LOCAL_TZ_NAME = _get_local_tz()
 LOCAL_LOCALE = _get_locale()
