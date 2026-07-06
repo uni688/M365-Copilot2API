@@ -2,7 +2,7 @@
 M365 Copilot 一键配置向导
 运行: python -m m365_copilot.scripts.setup
 """
-import os, sys, json, re, ssl, urllib.request, urllib.parse, uuid, base64, hashlib
+import os, sys, json, re, ssl, urllib.request
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
     try:
@@ -10,11 +10,8 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
     except Exception:
         pass
 
-CLIENT_ID = "c0ab8ce9-e9a0-42e7-b064-33d422df41f1"
-SCOPE = "https://substrate.office.com/sydney/M365Chat.Read https://substrate.office.com/sydney/sydney.readwrite offline_access openid profile"
-REDIRECT_URI = "https://login.microsoftonline.com/common/oauth2/nativeclient"
-AUTHORIZE_URL = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
-TOKEN_URL = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+CLIENT_ID = "4765445b-32c6-49b0-83e6-1d93765276ca"
+SCOPE = "https://substrate.office.com/sydney/.default openid profile offline_access"
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 DATA_DIR = os.path.join(BASE_DIR, "data", "tokens")
@@ -87,98 +84,79 @@ def extract_from_console_output(raw: str):
 
 
 def get_config_from_browser():
-    step("步骤 1: 浏览器登录获取授权")
+    step("步骤 1: 从浏览器获取配置")
     print()
-
-    verifier = base64.urlsafe_b64encode(os.urandom(64)).rstrip(b'=').decode()
-    challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode()).digest()
-    ).rstrip(b'=').decode()
-
-    params = {
-        'client_id': CLIENT_ID, 'response_type': 'code',
-        'response_mode': 'query',
-        'scope': SCOPE,
-        'redirect_uri': REDIRECT_URI,
-        'state': uuid.uuid4().hex, 'nonce': uuid.uuid4().hex,
-        'code_challenge': challenge, 'code_challenge_method': 'S256',
-        'prompt': 'select_account',
-    }
-    url = AUTHORIZE_URL.format(tenant="common") + "?" + urllib.parse.urlencode(params)
-
-    print("请在浏览器中打开以下链接并登录:")
+    print("请在浏览器中完成以下操作:")
+    print("  1. 打开 https://m365.cloud.microsoft 并登录")
+    print("  2. 按 F12 打开 DevTools → Console")
+    print("  3. 粘贴运行下面这行代码:")
+    print()
+    print("  (复制下面完整的一行)")
+    print()
+    print("-" * 60)
+    js_snippet = (
+        "(() => {"
+        "const k = Object.keys(localStorage).find(k => k.startsWith('msal.') && k.includes('|'));"
+        "if (!k) return JSON.stringify({error:'NOT_FOUND: 未找到 MSAL 登录信息，请确认已登录 m365.cloud.microsoft'});"
+        "const p = k.split('|')[1].split('.');"
+        "const rtKey = Object.keys(localStorage).find(k => k.toLowerCase().includes('refreshtoken'));"
+        "let rt = 'NOT_FOUND';"
+        "if (rtKey) {"
+        "  try { const d = JSON.parse(localStorage[rtKey]); rt = d.secret || d.value || JSON.stringify(d); }"
+        "  catch(e) { rt = localStorage[rtKey]; }"
+        "}"
+        "return JSON.stringify({oid:p[0], tenant:p[1], refresh_token:rt});"
+        "})()"
+    )
+    print(js_snippet)
+    print("-" * 60)
+    print()
+    print("  请复制控制台输出的 JSON（从 { 到 } 的完整内容）")
+    print("  如果显示 error 字段，请确认已在 m365.cloud.microsoft 登录后重试")
     print()
     print("=" * 60)
-    print(url)
+    print("【请复制从这里开始 ==================================】")
     print("=" * 60)
     print()
-    print("登录后浏览器会跳转到一个空白页或错误页（这是正常的）")
-    print("请复制地址栏的完整 URL 粘贴到下面：")
+    print("  提示: 只粘贴 JSON 部分（从 { 开始到 } 结束），不要带 === 标记")
     print()
 
-    url_input = input("粘贴跳转后的完整 URL: ").strip()
-    if not url_input:
-        print("错误: 未输入 URL")
+    raw = input("粘贴 => ").strip()
+    if not raw:
+        print("错误: 未输入任何内容")
         sys.exit(1)
-
-    parsed = urllib.parse.urlparse(url_input)
-    code = urllib.parse.parse_qs(parsed.query).get("code", [None])[0]
-    if not code:
-        code = urllib.parse.parse_qs(parsed.fragment).get("code", [None])[0]
-    if not code:
-        print("错误: URL 中未找到 authorization code")
-        print("请确认粘贴的是登录后跳转的完整地址栏 URL")
-        sys.exit(1)
-
-    step("步骤 2: 交换 Token")
-    print()
-
-    data = urllib.parse.urlencode({
-        'client_id': CLIENT_ID, 'code': code,
-        'redirect_uri': REDIRECT_URI,
-        'grant_type': 'authorization_code', 'code_verifier': verifier,
-    }).encode()
-    req = urllib.request.Request(TOKEN_URL.format(tenant="common"), data=data)
-    req.add_header('Content-Type', 'application/x-www-form-urlencoded')
 
     try:
-        with urllib.request.urlopen(req, context=ssl.create_default_context()) as resp:
-            result = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        err = json.loads(e.read())
-        print(f"Token 交换失败: {err.get('error')}: {err.get('error_description', '')[:200]}")
-        sys.exit(1)
-
-    if 'refresh_token' not in result:
-        print(f"Token 交换失败: {result.get('error', '未知错误')}")
-        sys.exit(1)
-
-    # Decode JWT to get tenant and oid
-    token = result['access_token']
-    payload_b64 = token.split('.')[1]
-    pad = 4 - (len(payload_b64) % 4)
-    if pad != 4:
-        payload_b64 += '=' * pad
-    try:
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        tenant = claims.get('tid', '')
-        oid = claims.get('oid', '')
-    except Exception:
-        tenant = ''
-        oid = ''
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        tenant, oid, refresh_token = extract_from_console_output(raw)
+        if not tenant or not oid:
+            print("错误: 无法解析输出，请确认 Console 输出的是完整 JSON")
+            print("提示: 只粘贴从 { 开始到 } 结束的部分")
+            sys.exit(1)
+    else:
+        if "error" in data:
+            print(f"错误: {data['error']}")
+            sys.exit(1)
+        tenant = data.get("tenant")
+        oid = data.get("oid")
+        refresh_token = data.get("refresh_token")
 
     if not tenant or not oid:
-        print("错误: 无法从 JWT 中解析 tenant/oid")
-        print("请手动设置环境变量 M365_TENANT_ID 和 M365_USER_OID")
-        tenant = input("Tenant ID: ").strip()
-        oid = input("User OID: ").strip()
+        print("错误: 无法获取 Tenant ID 或 User OID")
+        sys.exit(1)
 
-    return tenant, oid, result['refresh_token'], result
+    if not refresh_token or refresh_token == "NOT_FOUND":
+        print("错误: 无法获取 Refresh Token")
+        print("解决方法: 打开 https://m365.cloud.microsoft 并确认已登录，然后重新运行 setup")
+        sys.exit(1)
+
+    return tenant, oid, refresh_token
 
 
 def verify_token(tenant, oid, refresh_token):
     """Verify refresh token by exchanging for access token."""
-    step("步骤 3: 验证 Token")
+    step("步骤 2: 验证 Token")
     print()
 
     rt_file = os.path.join(DATA_DIR, "rt_90day.txt")
@@ -224,8 +202,10 @@ def main():
     print("  M365 Copilot 配置向导 v2.0")
     print("=" * 60)
     print()
+    print("只需一步: 在浏览器 Console 运行一行 JS，粘贴输出即可。")
+    print()
 
-    tenant, oid, refresh_token, token_result = get_config_from_browser()
+    tenant, oid, refresh_token = get_config_from_browser()
     rt_file, cache_file = verify_token(tenant, oid, refresh_token)
     save_env(tenant, oid)
 
