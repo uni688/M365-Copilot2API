@@ -22,11 +22,15 @@ class TokenManager:
             raw = f.read().strip()
         if not raw:
             raise TokenRefreshError("Refresh token file is empty")
+        from .scripts.crypto import decrypt
         try:
-            from .scripts.crypto import decrypt
             return decrypt(raw)
-        except Exception:
-            return raw
+        except Exception as e:
+            raise TokenRefreshError(
+                f"无法解密 refresh token: {e}\n"
+                f"可能原因: 加密密钥文件 (~/.m365-copilot/encryption.key) 不匹配或已损坏\n"
+                f"解决方法: 重新运行 m365-copilot-setup"
+            )
 
     def _write_rt(self, token):
         from .scripts.crypto import encrypt
@@ -50,9 +54,16 @@ class TokenManager:
                 result = json.loads(resp.read())
         except urllib.error.HTTPError as e:
             err = json.loads(e.read())
+            desc = err.get('error_description', '')[:300]
+            code = err.get('error', '')
+            if 'AADSTS700084' in desc:
+                hint = "SPA refresh token 已过期 (24h 限制)。请重新运行 m365-copilot-setup"
+            elif 'AADSTS700082' in desc or 'AADSTS700022' in desc:
+                hint = "Refresh token 已过期。请重新运行 m365-copilot-setup"
+            else:
+                hint = f"请重新运行 m365-copilot-setup"
             raise TokenRefreshError(
-                f"Refresh failed: {err.get('error')}: "
-                f"{err.get('error_description', '')[:200]}"
+                f"Refresh failed: {code}: {desc}\n{hint}"
             )
         if 'refresh_token' in result:
             self._write_rt(result['refresh_token'])
