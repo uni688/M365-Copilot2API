@@ -1,4 +1,4 @@
-﻿import json, os, sys, asyncio, time, uuid, logging, http.server, socketserver, threading, hashlib, re
+﻿import json, os, sys, asyncio, time, uuid, logging, http.server, socketserver, threading, re
 from functools import lru_cache
 
 from .. import __version__
@@ -16,7 +16,6 @@ MAX_TOOL_ROUNDS = 3
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 RT_FILE = os.path.join(BASE_DIR, "data", "tokens", "rt_90day.txt")
 CACHE_FILE = os.path.join(BASE_DIR, "data", "tokens", "token_cache.json")
-CONTEXT_CACHE_DIR = os.path.join(BASE_DIR, "data", "cache")
 
 ANTHROPIC_MODEL_MAP = {
     "gpt-5.5": "gpt5.5",
@@ -35,57 +34,6 @@ def _resolve_anthropic_model(anthropic_id):
         if anthropic_id.startswith(prefix):
             return mapped
     return "auto"
-
-
-class ContextCache:
-    def __init__(self, cache_dir, maxsize=256):
-        self.cache_dir = cache_dir
-        os.makedirs(cache_dir, exist_ok=True)
-        self._mem = {}
-        self._order = []
-        self._maxsize = maxsize
-
-    def _evict(self):
-        while len(self._order) > self._maxsize:
-            old = self._order.pop(0)
-            self._mem.pop(old, None)
-
-    def _path(self, key):
-        safe = hashlib.md5(key.encode()).hexdigest()
-        return os.path.join(self.cache_dir, f"{safe}.json")
-
-    def get(self, key):
-        if key in self._mem:
-            self._order.remove(key)
-            self._order.append(key)
-            return self._mem[key]
-        p = self._path(key)
-        if os.path.exists(p):
-            with open(p) as f:
-                data = json.load(f)
-            self._mem[key] = data
-            self._order.append(key)
-            self._evict()
-            return data
-        return None
-
-    def set(self, key, value):
-        self._mem[key] = value
-        if key in self._order:
-            self._order.remove(key)
-        self._order.append(key)
-        self._evict()
-        p = self._path(key)
-        with open(p, "w") as f:
-            json.dump(value, f, ensure_ascii=False)
-
-    def pop(self, key):
-        self._mem.pop(key, None)
-        if key in self._order:
-            self._order.remove(key)
-        p = self._path(key)
-        if os.path.exists(p):
-            os.remove(p)
 
 
 def sse_msg(data, chunk_id=None, model="gpt-4"):
@@ -238,7 +186,6 @@ def _execute_tool(name, args):
 
 
 class OpenAIHandler(http.server.BaseHTTPRequestHandler):
-    ctx_cache = ContextCache(CONTEXT_CACHE_DIR)
 
     def log_message(self, format, *args):
         logging.info(f"{self.client_address[0]} - {format % args}")
@@ -269,14 +216,6 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         if not cfg:
             return self._send_error(400, f"Unknown model: {model}")
         return model, messages, stream, tools, response_format, cfg
-
-    def _get_session_id(self, req):
-        sid = self.headers.get("X-Session-Id", "")
-        if not sid and "session_id" in req:
-            sid = req["session_id"]
-        if not sid and "user" in req:
-            sid = req["user"]
-        return sid or None
 
     # ---- HTTP routing ----
     def do_GET(self):
@@ -329,21 +268,14 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
 
         client = _get_client()
 
-        session_id = self._get_session_id(req)
-        conv_id = None
-        if session_id:
-            cached = self.ctx_cache.get(f"session:{session_id}")
-            if cached:
-                conv_id = cached.get("conversation_id")
-
-        messages = self._run_tool_loop(messages, cfg, client, conv_id)
+        messages = self._run_tool_loop(messages, cfg, client)
 
         if stream:
-            self._stream_chat(messages, cfg, client, conv_id)
+            self._stream_chat(messages, cfg, client)
         else:
-            self._non_stream_chat(messages, cfg, client, conv_id)
+            self._non_stream_chat(messages, cfg, client)
 
-    def _run_tool_loop(self, messages, cfg, client, conv_id):
+    def _run_tool_loop(self, messages, cfg, client):
         tone = cfg["tone"]
         gpt_override = cfg["override"]
 
@@ -367,7 +299,7 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
 
         for _round in range(MAX_TOOL_ROUNDS):
             resp_text, _, _ = _run_async(
-                client.chat_conversation(messages, tone, gpt_override, conversation_id=conv_id)
+                client.chat_conversation(messages, tone, gpt_override)
             )
 
             detected = ToolCallDetector.detect(resp_text)
@@ -386,7 +318,7 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
 
         return messages
 
-    def _stream_chat(self, messages, cfg, client, conv_id):
+    def _stream_chat(self, messages, cfg, client):
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -404,7 +336,7 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
                 has_content = False
                 full_text = ""
                 async for chunk, is_final in client.chat_conversation_stream_gen(
-                    messages, tone, gpt_override, conversation_id=conv_id):
+                    messages, tone, gpt_override):
                     if is_final:
                         break
                     full_text += chunk
@@ -439,14 +371,14 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(f"data: {json.dumps(err)}\n\n".encode())
             self.wfile.write(b"data: [DONE]\n\n")
 
-    def _non_stream_chat(self, messages, cfg, client, conv_id):
+    def _non_stream_chat(self, messages, cfg, client):
         openai_model = cfg["openai_id"]
         tone = cfg["tone"]
         gpt_override = cfg["override"]
 
         try:
             result_text, tool_calls, finish_reason = _run_async(
-                client.chat_conversation(messages, tone, gpt_override, conversation_id=conv_id)
+                client.chat_conversation(messages, tone, gpt_override)
             )
         except Exception as e:
             self._send_error(500, str(e))
@@ -734,7 +666,6 @@ def main():
         sys.exit(1)
 
     os.makedirs(os.path.dirname(RT_FILE), exist_ok=True)
-    os.makedirs(CONTEXT_CACHE_DIR, exist_ok=True)
     tm = TokenManager(TENANT_ID, CLIENT_ID, SCOPE, RT_FILE, CACHE_FILE)
 
     if args.setup:
