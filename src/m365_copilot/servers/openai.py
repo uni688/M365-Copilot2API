@@ -84,6 +84,7 @@ class ContextCache:
             self._order.append(key)
             self._evict()
         p = self._path(key)
+        os.makedirs(self.cache_dir, exist_ok=True)
         with open(p, "w") as f:
             json.dump(value, f, ensure_ascii=False)
 
@@ -215,14 +216,6 @@ def _execute_tool(name, args):
 class OpenAIHandler(http.server.BaseHTTPRequestHandler):
     ctx_cache = ContextCache(CONTEXT_CACHE_DIR)
 
-    @staticmethod
-    def _first_user_content(messages):
-        """Extract the first user message content as a session key."""
-        for m in messages:
-            if isinstance(m, dict) and m.get("role") == "user":
-                return str(m.get("content", ""))[:200]
-        return None
-
     def log_message(self, format, *args):
         logging.info(f"{self.client_address[0]} - {format % args}")
 
@@ -321,19 +314,6 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
             if not conv_id:
                 conv_id = uuid.uuid4().hex
                 self.ctx_cache.set(f"session:{session_id}", {"conversation_id": conv_id})
-        else:
-            # Auto-match: use first user message as session key
-            first_msg = self._first_user_content(messages)
-            if first_msg:
-                sid = hashlib.sha256(first_msg.encode()).hexdigest()[:16]
-                cached = self.ctx_cache.get(f"session:{sid}")
-                if cached:
-                    conv_id = cached.get("conversation_id")
-            if not conv_id:
-                conv_id = uuid.uuid4().hex
-                if first_msg:
-                    sid = hashlib.sha256(first_msg.encode()).hexdigest()[:16]
-                    self.ctx_cache.set(f"session:{sid}", {"conversation_id": conv_id})
 
         messages = self._apply_intent_tools(messages)
 
