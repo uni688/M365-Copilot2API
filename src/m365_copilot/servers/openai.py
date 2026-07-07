@@ -3,7 +3,7 @@ from functools import lru_cache
 
 from .. import __version__
 from ..auth import TokenManager
-from ..client import M365Client
+from ..client import _clean_citations, M365Client
 from ..models import MODELS, lookup_model, TENANT_ID, USER_OID, CLIENT_ID, SCOPE
 from ..tools import provider
 from ..tools.mcp_bridge import MCPBridge
@@ -115,6 +115,7 @@ _loop = None
 _tm = None
 _client = None
 _mcp = None
+_client_lock = threading.Lock()
 
 
 def _get_loop():
@@ -149,6 +150,17 @@ def _get_mcp():
 
 
 class OpenAIHandler(http.server.BaseHTTPRequestHandler):
+    _session_conv = {}  # session_id → conversation_id (in-memory only)
+
+    def _get_conv_id(self, req):
+        sid = req.get("session_id") or self.headers.get("X-Session-Id") or req.get("user")
+        if not sid:
+            return None
+        conv_id = self._session_conv.get(sid)
+        if not conv_id:
+            conv_id = uuid.uuid4().hex
+            self._session_conv[sid] = conv_id
+        return conv_id
 
     def log_message(self, format, *args):
         logging.info(f"{self.client_address[0]} - {format % args}")
@@ -232,15 +244,22 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         if tools:
             inject_tools_prompt(messages, tools)
 
-        tool_choice = req.get("tool_choice", "auto")
+        conv_id = self._get_conv_id(req)
         client = _get_client()
 
-        if stream:
-            self._stream_chat(messages, cfg, client)
-        else:
-            self._non_stream_chat(messages, cfg, client)
+        with _client_lock:
+            if stream:
+                self._stream_chat(messages, cfg, client, conv_id)
+            else:
+                self._non_stream_chat(messages, cfg, client, conv_id)
 
-    def _stream_chat(self, messages, cfg, client):
+    def _write_sse(self, data):
+        try:
+            self.wfile.write(data.encode())
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError):
+            pass
+
+    def _stream_chat(self, messages, cfg, client, conv_id=None):
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -258,31 +277,34 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
                 has_content = False
                 full_text = ""
                 async for chunk, is_final in client.chat_conversation_stream_gen(
-                    messages, tone, gpt_override):
+                    messages, tone, gpt_override, conversation_id=conv_id):
                     if is_final:
                         break
+                    chunk = _clean_citations(chunk)
+                    if not chunk:
+                        continue
                     full_text += chunk
                     if not has_content:
-                        self.wfile.write(sse_msg({"role": "assistant", "content": chunk}, chunk_id, openai_model).encode())
+                        self._write_sse(sse_msg({"role": "assistant", "content": chunk}, chunk_id, openai_model))
                         has_content = True
                     else:
-                        self.wfile.write(sse_msg({"content": chunk}, chunk_id, openai_model).encode())
+                        self._write_sse(sse_msg({"content": chunk}, chunk_id, openai_model))
 
                 if client._last_tool_calls:
                     if not has_content:
-                        self.wfile.write(sse_msg({"role": "assistant", "content": None}, chunk_id, openai_model).encode())
+                        self._write_sse(sse_msg({"role": "assistant", "content": None}, chunk_id, openai_model))
                     for i, tc in enumerate(client._last_tool_calls):
-                        self.wfile.write(sse_msg({
+                        self._write_sse(sse_msg({
                             "tool_calls": [{"index": i, "id": tc["id"], "type": "function",
                                             "function": {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}}]
-                        }, chunk_id, openai_model).encode())
+                        }, chunk_id, openai_model))
                     prompt_str = str(messages)
                     usage = {
                         "prompt_tokens": len(prompt_str.split()),
                         "completion_tokens": len(full_text.split()),
                         "total_tokens": len(prompt_str.split()) + len(full_text.split()),
                     }
-                    self.wfile.write(sse_done(chunk_id, openai_model, usage, finish_reason="tool_calls").encode())
+                    self._write_sse(sse_done(chunk_id, openai_model, usage, finish_reason="tool_calls"))
                 else:
                     prompt_str = str(messages)
                     usage = {
@@ -290,24 +312,24 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
                         "completion_tokens": len(full_text.split()),
                         "total_tokens": len(prompt_str.split()) + len(full_text.split()),
                     }
-                    self.wfile.write(sse_done(chunk_id, openai_model, usage).encode())
+                    self._write_sse(sse_done(chunk_id, openai_model, usage))
 
             _run_async(stream_loop())
         except Exception as e:
             err = {"id": chunk_id, "object": "chat.completion.chunk",
                    "created": int(time.time()), "model": openai_model,
                    "choices": [{"index": 0, "delta": {"content": f"Error: {e}"}, "finish_reason": "stop"}]}
-            self.wfile.write(f"data: {json.dumps(err)}\n\n".encode())
-            self.wfile.write(b"data: [DONE]\n\n")
+            self._write_sse(f"data: {json.dumps(err)}\n\n")
+            self._write_sse("data: [DONE]\n\n")
 
-    def _non_stream_chat(self, messages, cfg, client):
+    def _non_stream_chat(self, messages, cfg, client, conv_id=None):
         openai_model = cfg["openai_id"]
         tone = cfg["tone"]
         gpt_override = cfg["override"]
 
         try:
             result_text, tool_calls, finish_reason = _run_async(
-                client.chat_conversation(messages, tone, gpt_override)
+                client.chat_conversation(messages, tone, gpt_override, conversation_id=conv_id)
             )
         except Exception as e:
             self._send_error(500, str(e))

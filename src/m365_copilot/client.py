@@ -15,7 +15,12 @@ def clean_text(text):
         text = text.decode("utf-8", errors="ignore")
     cleaned = "".join(c for c in text if c.isprintable() or c in "\n\t\r")
     cleaned = re.sub(r"[\x00-\x1f\x7f]{1,3}$", "", cleaned)
+    cleaned = _clean_citations(cleaned)
     return cleaned.strip()
+
+
+def _clean_citations(text):
+    return re.sub(r'\s*[\uE000-\uF8FF]cite[\uE000-\uF8FF](?:[^\uE000-\uF8FF]+[\uE000-\uF8FF])+[^\uE000-\uF8FF]*', '', text)
 
 
 def extract_tool_call(msg):
