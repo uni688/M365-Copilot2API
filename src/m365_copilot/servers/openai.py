@@ -46,13 +46,13 @@ def sse_msg(data, chunk_id=None, model="gpt-4"):
     return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
 
-def sse_done(chunk_id=None, model="gpt-4", usage=None, reasoning=None):
+def sse_done(chunk_id=None, model="gpt-4", usage=None, reasoning=None, finish_reason="stop"):
     if chunk_id is None:
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
     chunk = {
         "id": chunk_id, "object": "chat.completion.chunk",
         "created": int(time.time()), "model": model,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
     }
     if usage:
         chunk["usage"] = usage
@@ -229,6 +229,10 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
         if response_format.get("type") == "json_object":
             inject_json_mode(messages)
 
+        if tools:
+            inject_tools_prompt(messages, tools)
+
+        tool_choice = req.get("tool_choice", "auto")
         client = _get_client()
 
         if stream:
@@ -267,19 +271,26 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
                 if client._last_tool_calls:
                     if not has_content:
                         self.wfile.write(sse_msg({"role": "assistant", "content": None}, chunk_id, openai_model).encode())
-                    for tc in client._last_tool_calls:
+                    for i, tc in enumerate(client._last_tool_calls):
                         self.wfile.write(sse_msg({
-                            "tool_calls": [{"index": 0, "id": tc["id"], "type": "function",
+                            "tool_calls": [{"index": i, "id": tc["id"], "type": "function",
                                             "function": {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}}]
                         }, chunk_id, openai_model).encode())
-
-                prompt_str = str(messages)
-                usage = {
-                    "prompt_tokens": len(prompt_str.split()),
-                    "completion_tokens": len(full_text.split()),
-                    "total_tokens": len(prompt_str.split()) + len(full_text.split()),
-                }
-                self.wfile.write(sse_done(chunk_id, openai_model, usage).encode())
+                    prompt_str = str(messages)
+                    usage = {
+                        "prompt_tokens": len(prompt_str.split()),
+                        "completion_tokens": len(full_text.split()),
+                        "total_tokens": len(prompt_str.split()) + len(full_text.split()),
+                    }
+                    self.wfile.write(sse_done(chunk_id, openai_model, usage, finish_reason="tool_calls").encode())
+                else:
+                    prompt_str = str(messages)
+                    usage = {
+                        "prompt_tokens": len(prompt_str.split()),
+                        "completion_tokens": len(full_text.split()),
+                        "total_tokens": len(prompt_str.split()) + len(full_text.split()),
+                    }
+                    self.wfile.write(sse_done(chunk_id, openai_model, usage).encode())
 
             _run_async(stream_loop())
         except Exception as e:

@@ -177,6 +177,7 @@ class M365Client:
         await ws.send(payload + "\x1e")
 
         tool_calls = []
+        self._last_tool_calls = []
         self._last_full_text = ""
 
         while True:

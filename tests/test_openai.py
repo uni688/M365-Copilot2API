@@ -123,5 +123,27 @@ class TestPayload(unittest.TestCase):
         self.assertIn("ConversationId=abc123", url)
 
 
+class TestSSEFinishReason(unittest.TestCase):
+    def test_sse_done_tool_calls(self):
+        result = sse_done("cmpl-1", "gpt-4", None, finish_reason="tool_calls")
+        self.assertIn("tool_calls", result)
+        self.assertNotIn("stop", result.split("\n")[0])
+
+
+class TestInjectToolsPrompt(unittest.TestCase):
+    def test_inject_adds_prompt(self):
+        from m365_copilot.servers.openai import inject_tools_prompt
+        msgs = [{"role": "user", "content": "hello"}]
+        inject_tools_prompt(msgs, [{"function": {"name": "get_weather", "description": "Get weather"}}])
+        self.assertIn("get_weather", msgs[0]["content"])
+        self.assertIn("hello", msgs[0]["content"])
+
+    def test_inject_without_function_wrapper(self):
+        from m365_copilot.servers.openai import inject_tools_prompt
+        msgs = [{"role": "user", "content": "hi"}]
+        inject_tools_prompt(msgs, [{"name": "search", "description": "Search"}])
+        self.assertIn("search", msgs[0]["content"])
+
+
 if __name__ == "__main__":
     unittest.main()
