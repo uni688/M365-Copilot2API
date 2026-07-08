@@ -43,3 +43,10 @@ AGENTS.md
 # Test artifacts
 .pytest_cache/
 tests/debug_context.py
+
+# Probe outputs
+probe_output/
+probe_results.json
+test_*.py
+tests/probe_*.py
+src/m365_copilot/scripts/probe_model.py
