@@ -1,7 +1,7 @@
 """Minimal MCP test server for validating the MCP Bridge.
 Implements JSON-RPC 2.0 over stdio per MCP spec.
-Tools: calculator, echo, time"""
-import json, sys, datetime
+Tools: calculator (safe), echo, time"""
+import json, sys, datetime, ast, operator
 
 TOOLS = [
     {
@@ -48,7 +48,7 @@ def handle_request(req):
         if name == "calculator":
             expr = args.get("expression", "")
             try:
-                result = str(eval(expr, {"__builtins__": {}}, {}))
+                result = str(_safe_eval(expr))
             except Exception as e:
                 result = f"error: {e}"
             return {"content": [{"type": "text", "text": result}]}

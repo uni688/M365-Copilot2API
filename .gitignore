@@ -39,3 +39,7 @@ desktop.ini
 
 # Project-specific
 AGENTS.md
+
+# Test artifacts
+.pytest_cache/
+tests/debug_context.py

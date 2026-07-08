@@ -2,7 +2,7 @@
 
 # m365-copilot2api
 
-**将 Microsoft 365 Copilot 的 WebSocket 接口转换为 OpenAI / Anthropic 兼容 HTTP API**
+**将 Microsoft 365 Copilot 的 WebSocket 接口转换为 OpenAI 兼容 HTTP API**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Research%20Only-critical.svg)](#免责声明)
@@ -25,7 +25,7 @@
 
 M365 Copilot 的浏览器界面通过一个未公开的 SignalR WebSocket 与后端通信。本项目将这个 WebSocket 接口包装成标准的 HTTP API，让你能在终端或任何 OpenAI 兼容客户端中使用它。
 
-**已实现的**: 文本对话流式/非流式输出、多轮上下文、session 续传、**真实 Claude 模型（Claude Sonnet / Opus）**、GPT-5.x 全系列模型
+**已实现的**: 文本对话流式/非流式输出、多轮上下文、session 续传、GPT-5.x 全系列模型
 
  **未实现的**: 图像生成、文件上传、代码解释器 — WebSocket 端点存在但本项目未对接
 
@@ -43,19 +43,13 @@ pip install -e .
 
 ### 配置
 
-**只需一步：** 在浏览器中登录后，Console 运行一行 JS 获取所有信息。
+**只需一步：** 运行向导，在浏览器中登录即可自动获取所有信息。
 
 ```bash
 m365-copilot-setup
 ```
 
-向导会让你：
-1. 在浏览器 Console 粘贴运行一行 JS（自动提取 Tenant ID / OID / Refresh Token）
-2. 复制控制台输出的完整 JSON 并粘贴到终端
-3. 自动加密存储 Token 并验证
-
-> **提示**: 如果已登录 `m365.cloud.microsoft`，无需再次登录浏览器。
-> **注意**: 粘贴时只粘贴 JSON 部分（从 `{` 开始到 `}` 结束），不要带前后 `===` 标记。
+向导会自动打开浏览器，登录后自动提取并保存 Token。
 
 ### 使用
 
@@ -77,7 +71,6 @@ m365-copilot --model gpt5.2 "写一个快速排序"
 m365-copilot -i
 
 # 其他模型
-m365-copilot --model claude "你好"      # 真实 Claude Sonnet 4.6
 m365-copilot --model reasoning "999*999"  # 深度推理模式
 ```
 
@@ -85,7 +78,7 @@ m365-copilot --model reasoning "999*999"  # 深度推理模式
 
 | 参数 | 说明 |
 |------|------|
-| `--model` | 传给后端的模型标识: `auto`/`quick`/`reasoning`/`gpt5.2`-`gpt5.5`/`claude` |
+| `--model` | 传给后端的模型标识: `auto`/`quick`/`reasoning`/`gpt5.2`-`gpt5.5` |
 | `--reasoning` | 同 `--model reasoning` |
 | `-i` | 交互模式，保留多轮上下文 |
 | `--no-stream` | 等待完整回复，而非逐字输出 |
@@ -157,7 +150,7 @@ $ m365-copilot "北京天气怎么样"   # 自动调用 get_weather
 | 功能 | 状态 | 说明 |
 |------|------|------|
 | 文本对话 | ✅ 可用 | 流式/非流式，多轮，session 续传，自动上下文匹配 |
-| 模型切换 | ✅ 真实切换 | Claude Sonnet/Opus、GPT-5.x 全系列独立路由 |
+| 模型切换 | ✅ 支持切换 | GPT-5.x 全系列独立路由 |
 | 多轮上下文（无 session_id）| ✅ 自动匹配 | 消息前缀哈希自动续传同一对话 |
 | 图像生成 | ❌ 未实现 | payload 存在但无响应解析 |
 | Token 计数 | ⚠️ 粗估 | 空格分词，非真实 BPE 计数 |
@@ -183,10 +176,9 @@ Your App → m365-copilot2api → substrate.office.com (SignalR) → M365 Copilo
 ```
 M365_TENANT_ID=xxx-xxx-xxx-xxx
 M365_USER_OID=xxx-xxx-xxx-xxx
-M365_CLIENT_ID=4765445b-32c6-49b0-83e6-1d93765276ca  # 可选
 ```
 
-手动获取 Tenant ID 和 User OID（如果 setup 失败）：
+如果 setup 失败，可以通过浏览器 Console 手动获取 Tenant ID 和 User OID：
 
 ```javascript
 // 浏览器登录 m365.cloud.microsoft 后，F12 Console 运行:

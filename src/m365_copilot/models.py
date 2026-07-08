@@ -1,6 +1,6 @@
 import os
 
-CLIENT_ID = os.environ.get("M365_CLIENT_ID", "4765445b-32c6-49b0-83e6-1d93765276ca")
+CLIENT_ID = os.environ.get("M365_CLIENT_ID", "c0ab8ce9-e9a0-42e7-b064-33d422df41f1")
 TENANT_ID = os.environ.get("M365_TENANT_ID", "")
 USER_OID = os.environ.get("M365_USER_OID", "")
 SCOPE = "https://substrate.office.com/sydney/.default openid profile offline_access"
